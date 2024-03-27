@@ -1,17 +1,20 @@
+import os.path
+
 import scrapy
 from datetime import datetime, timedelta
 import re
 import time
 from scrapy.loader import ItemLoader
 from scrapy.http import FormRequest
-from arxiv.items import ArxivItem
+from items import ArxivItem
+import requests
+from scrapy.crawler import CrawlerProcess
 
-
-
+src = '/home/rb025/PycharmProjects/Data/arxiv_crawler/output'
 class ArxivSpider(scrapy.Spider):
     name = "arxiv"
 
-    def __init__(self, search_query , field = 'all' , start = 0, \
+    def __init__(self, search_query = "machine learning", field = 'all' , start = 0, \
                  date_from = '', date_to = '', filter_date = '', **kwargs):
         super().__init__(**kwargs)
         
@@ -25,7 +28,7 @@ class ArxivSpider(scrapy.Spider):
         
         if not date_from and not date_to:
             self.date_to = time.strftime('%Y-%m-%d')
-            self.date_from =yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+            self.date_from = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
             self.filter_date='all_dates'
         else:
             self.date_to = date_to
@@ -35,62 +38,53 @@ class ArxivSpider(scrapy.Spider):
         self.start = start
         self.field = field
         
-        self.base_url = 'https://arxiv.org/search/advanced?advanced=&terms-0-operator=AND&terms-0-term='
-        
-        self.url = self.base_url+self.search_query+'&terms-0-field='+self.field+\
-        '&classification-computer_science=y&classification-economics=y&classification-eess=y&classification-mathematics=y&classification-physics=y&classification-physics_archives=all&classification-q_biology=y&classification-q_finance=y&classification-statistics=y&date-filter_by='\
-+self.filter_date\
-+'&date-year=&date-from_date='\
-+self.date_from\
-+'&date-to_date='+self.date_to+'&date-date_type=submitted_date&abstracts=show&size=50&order=-announced_date_first'
+        self.base_url = 'https://arxiv.org'
 
+        self.url = self.base_url
         self.start_urls = [self.url]
         self.tot_papers = 0
+        self.date = ['2401','2402','2403']
+        self.date_cs = ['new', 'recent']
         print('\n Url to scrape: \n %s \n ' %self.url)
         print('Date_from = %s \n ' %self.date_from)
         print('Date_to = %s \n ' %self.date_to)
         print('Filter_date = %s \n \n' %self.filter_date)
 
-
     def parse(self, response):
-        
-        for paper in response.css("li.arxiv-result"):
-            
-            self.tot_papers +=1
-   
-            new = ItemLoader(item=ArxivItem(),selector=paper)
-            
-            # 1. add fields that can be read directly from main page
-            new.add_value('ID', paper.css("p.list-title a::text").extract_first().strip('arXiv:'))
-            comments=paper.css('p.comments span::text').extract()
-            if len(comments)>1:
-                new.add_value('comments',comments[1] )            
-            new.add_value('title', paper.css("p.title::text").extract_first().strip(' \n '))
-            new.add_value('author', paper.css("p.authors").css("a::text").extract())
-            new.add_value('primary_cat',  paper.css("span.tag::text").extract_first())
-            new.add_value('abstract', (' ').join([sent if sent!=' ' else self.\
-                                            search_query_or for sent in  paper.css("span.abstract-full::text").\
-                                            extract()]).strip('\n '))           
+        for selector in response.css("li"):
+            page_id = selector.css("a::attr(id)").extract_first()
+            if page_id is not None:
+                page = selector.css("a::attr(href)").extract_first()
+                catagory = selector.css("a::text").extract_first()
+                if catagory == 'Computing Research Repository':
+                    for p,c in zip (selector.css("li").css("a::attr(href)"), selector.css("a::text")):
+                        catagory = c.root
+                        page = p.root
+                        if 'cs.' in page and 'recent' in page:
+                            date_cs = ['recent', 'new']
+                            for date in date_cs:
+                                url = self.url + page.replace('recent',date)
+                                yield scrapy.Request(url, callback=self.parse_page, meta={'catagory': catagory})
+                else:
+                    for date in self.date:
+                        url = self.url + page.replace('archive','list') + '/' + date
+                        yield scrapy.Request(url, callback=self.parse_page, meta={'catagory': catagory})
 
-            journal = paper.css("p.comments::text").extract()
-            if len(journal)>0:
-                new.add_value('journal', journal[-1].strip('\n'))
-            
-            # 2. add fields that have to be added following links 
-            abs_page = paper.css("p.list-title a::attr(href)").extract_first()
-            new.add_value('link', abs_page) # add link to abstract page
-            yield scrapy.Request(abs_page, callback=self.parse_abs_page, dont_filter = True, meta={'item':new})            
-  
-        
-        # 3. scrape next page until one exist
-        next_page = response.xpath("//nav//a[contains(@class, pagination-next)]/@href").extract()[1]
-        if next_page is not None:
-            yield response.follow(next_page, callback=self.parse)
+    def parse_page(self, response):
+        catagory = response.meta.get('catagory')
+        os.makedirs(os.path.join(src,catagory),exist_ok=True)
+        dst_folder = os.path.join(src,catagory)
+        for paper in response.css("dt"):
+            pdf_paper = paper.css('a[title="Download PDF"]::attr(href)').extract_first()
+            pdf_url = self.url + pdf_paper
+            self.tot_papers += 1
+            pdf_file = os.path.join(dst_folder, pdf_url.split('/')[-1])
+            if not os.path.isfile(pdf_file):
+                with open(pdf_file, 'wb') as f:
+                    pdf_response = requests.get(pdf_url)
+                    f.write(pdf_response.content)
 
-        print('\n %s papers found .... ' %self.tot_papers)
-  
 
-    
     def parse_abs_page(self, response):
         """
         From arXiv abstract page, fetches: 
@@ -115,5 +109,7 @@ class ArxivSpider(scrapy.Spider):
         new.add_value('date', response.css('div.submission-history::text').extract()[-2])
         
         yield new.load_item()
-        
-        
+
+crawler = CrawlerProcess()
+crawler.crawl(ArxivSpider)
+crawler.start()

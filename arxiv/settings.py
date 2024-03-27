@@ -9,10 +9,10 @@
 #     https://doc.scrapy.org/en/latest/topics/downloader-middleware.html
 #     https://doc.scrapy.org/en/latest/topics/spider-middleware.html
 
-BOT_NAME = 'arxiv'
+BOT_NAME = 'libgen'
 
-SPIDER_MODULES = ['arxiv.spiders']
-NEWSPIDER_MODULE = 'arxiv.spiders'
+SPIDER_MODULES = ['libgen.spiders']
+NEWSPIDER_MODULE = 'libgen.spiders'
 
 
 # Crawl responsibly by identifying yourself (and your website) on the user-agent
